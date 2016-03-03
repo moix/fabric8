@@ -20,7 +20,36 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import io.fabric8.kubernetes.api.Annotations;
 import io.fabric8.kubernetes.api.KubernetesHelper;
 import io.fabric8.kubernetes.api.extensions.Templates;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.Container;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.EnvVar;
+import io.fabric8.kubernetes.api.model.EnvVarBuilder;
+import io.fabric8.kubernetes.api.model.ExecAction;
+import io.fabric8.kubernetes.api.model.HTTPGetAction;
+import io.fabric8.kubernetes.api.model.HasMetadata;
+import io.fabric8.kubernetes.api.model.HostPathVolumeSource;
+import io.fabric8.kubernetes.api.model.IntOrString;
+import io.fabric8.kubernetes.api.model.KubernetesList;
+import io.fabric8.kubernetes.api.model.KubernetesListBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMeta;
+import io.fabric8.kubernetes.api.model.ObjectReference;
+import io.fabric8.kubernetes.api.model.ObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.PersistentVolumeClaimVolumeSource;
+import io.fabric8.kubernetes.api.model.PodSpec;
+import io.fabric8.kubernetes.api.model.PodTemplateSpec;
+import io.fabric8.kubernetes.api.model.Probe;
+import io.fabric8.kubernetes.api.model.Quantity;
+import io.fabric8.kubernetes.api.model.QuantityBuilder;
+import io.fabric8.kubernetes.api.model.ReplicationController;
+import io.fabric8.kubernetes.api.model.ReplicationControllerSpec;
+import io.fabric8.kubernetes.api.model.RunAsUserStrategyOptions;
+import io.fabric8.kubernetes.api.model.ServiceBuilder;
+import io.fabric8.kubernetes.api.model.ServiceFluent;
+import io.fabric8.kubernetes.api.model.ServicePort;
+import io.fabric8.kubernetes.api.model.TCPSocketAction;
+import io.fabric8.kubernetes.api.model.Volume;
+import io.fabric8.kubernetes.api.model.VolumeMount;
+import io.fabric8.kubernetes.api.model.VolumeMountBuilder;
 import io.fabric8.maven.support.Commandline;
 import io.fabric8.maven.support.JsonSchema;
 import io.fabric8.maven.support.JsonSchemaProperty;
@@ -88,17 +117,18 @@ public class JsonMojo extends AbstractFabric8Mojo {
     public static final String FABRIC8_PORT_CONTAINER_PREFIX = "docker.port.container.";
     public static final String FABRIC8_PORT_SERVICE = "fabric8.service.port";
     public static final String FABRIC8_CONTAINER_PORT_SERVICE = "fabric8.service.containerPort";
+    public static final String FABRIC8_NODE_PORT_SERVICE = "fabric8.service.nodePort";
     public static final String FABRIC8_PROTOCOL_SERVICE = "fabric8.service.protocol";
     public static final String FABRIC8_METRICS_PREFIX = "fabric8.metrics.";
     public static final String FABRIC8_METRICS_SCRAPE = FABRIC8_METRICS_PREFIX + "scrape";
     public static final String FABRIC8_METRICS_SCRAPE_ANNOTATION = FABRIC8_METRICS_SCRAPE + ".annotation";
-    public static final String FABRIC8_METRICS_PORT = FABRIC8_METRICS_PREFIX + "port" ;
-    public static final String FABRIC8_METRICS_PORT_ANNOTATION = FABRIC8_METRICS_PORT + ".annotation" ;
-    public static final String FABRIC8_METRICS_SCHEME = FABRIC8_METRICS_PREFIX + "scheme" ;
-    public static final String FABRIC8_METRICS_SCHEME_ANNOTATION = FABRIC8_METRICS_SCHEME + ".annotation" ;
-    public static final String FABRIC8_PORT_SERVICE_PREFIX = FABRIC8_PORT_SERVICE + ".";
-    public static final String FABRIC8_CONTAINER_PORT_SERVICE_PREFIX = FABRIC8_CONTAINER_PORT_SERVICE + ".";
-    public static final String FABRIC8_PROTOCOL_SERVICE_PREFIX = FABRIC8_PROTOCOL_SERVICE + ".";
+    public static final String FABRIC8_METRICS_PORT = FABRIC8_METRICS_PREFIX + "port";
+    public static final String FABRIC8_METRICS_PORT_ANNOTATION = FABRIC8_METRICS_PORT + ".annotation";
+    public static final String FABRIC8_METRICS_SCHEME = FABRIC8_METRICS_PREFIX + "scheme";
+    public static final String FABRIC8_METRICS_SCHEME_ANNOTATION = FABRIC8_METRICS_SCHEME + ".annotation";
+
+    private static final String SERVICE_REGEX = "^fabric8\\.service\\.(?<name>[^. ]+)\\..+$";
+    private static final Pattern SERVICE_PATTERN = Pattern.compile(SERVICE_REGEX);
 
     private static final String NAME = "name";
     private static final String ATTRIBUTE_TYPE = "attributeType";
@@ -312,6 +342,12 @@ public class JsonMojo extends AbstractFabric8Mojo {
     private String projectName;
 
     /**
+     * The project label used in the generated Kubernetes JSON dependencies template
+     */
+    @Parameter(property = "fabric8.combineJson.project", defaultValue = "${project.artifactId}")
+    private String combineProjectName;
+
+    /**
      * The group label used in the generated Kubernetes JSON template
      */
     @Parameter(property = "fabric8.label.group", defaultValue = "${project.groupId}")
@@ -335,7 +371,7 @@ public class JsonMojo extends AbstractFabric8Mojo {
     // TODO for now lets default to not creating headless services as it barfs when used with kubernetes...
     //@Parameter(property = "fabric8.service.headless", defaultValue = "true")
     @Parameter(property = "fabric8.service.headless", defaultValue = "false")
-    private boolean headlessServices;
+    private boolean headlessService;
 
     /**
      * The <a href="http://releases.k8s.io/HEAD/docs/user-guide/services.md#external-services">Type of the service</a>. Set to
@@ -392,6 +428,12 @@ public class JsonMojo extends AbstractFabric8Mojo {
      */
     @Parameter(property = FABRIC8_CONTAINER_PORT_SERVICE)
     private String serviceContainerPort;
+
+    /**
+     * The service node port
+     */
+    @Parameter(property = FABRIC8_NODE_PORT_SERVICE)
+    private Integer serviceNodePort;
 
     /**
      * The service protocol
@@ -589,7 +631,7 @@ public class JsonMojo extends AbstractFabric8Mojo {
             }
             if (combinedJson instanceof Template) {
                 Template template = (Template) combinedJson;
-                String templateName = getProjectName();
+                String templateName = getCombineProjectName();
                 setName(template, templateName);
                 configureTemplateDescriptionAndIcon(template, getIconUrl());
 
@@ -900,56 +942,7 @@ public class JsonMojo extends AbstractFabric8Mojo {
 
         addPersistentVolumeClaims(builder, volumes);
 
-        // Do we actually want to generate a service manifest?
-        if (serviceName != null) {
-            Map<String, String> metricsAnnotations = new HashMap<>();
-
-            if (metricsScrape) {
-                metricsAnnotations.put(metricsScrapeAnnotation, Boolean.toString(metricsScrape));
-                if (metricsPort != null) {
-                    metricsAnnotations.put(metricsPortAnnotation, metricsPort.toString());
-                }
-                if (metricsScheme != null) {
-                    metricsAnnotations.put(metricsSchemeAnnotation, metricsScheme);
-                }
-            }
-            Map<String,String> serviceAnnotations = getServiceAnnotations();
-            serviceAnnotations.putAll(metricsAnnotations);
-
-            Map<String, String> selector = new HashMap<>(labelMap);
-            if (removeVersionLabelFromServiceSelector) {
-                if (selector.remove("version") != null) {
-                    getLog().info("Removed 'version' label from service selector for service `" + serviceName + "`");
-                }
-            }
-
-            ServiceBuilder serviceBuilder = new ServiceBuilder()
-                    .withNewMetadata()
-                    .withName(serviceName)
-                    .withLabels(labelMap)
-                    .withAnnotations(serviceAnnotations)
-                    .endMetadata();
-
-            ServiceFluent.SpecNested<ServiceBuilder> serviceSpecBuilder = serviceBuilder.withNewSpec().withSelector(selector);
-
-            List<ServicePort> servicePorts = getServicePorts();
-            getLog().info("Generated ports: " + servicePorts);
-            boolean hasPorts = servicePorts != null & !servicePorts.isEmpty();
-            if (hasPorts) {
-                serviceSpecBuilder.withPorts(servicePorts);
-            } else {
-                serviceSpecBuilder.withClusterIP("None");
-                serviceSpecBuilder.withPorts(new ServicePort(null, null, 1, null, null));
-            }
-            if (Strings.isNotBlank(serviceType)) {
-                serviceSpecBuilder.withType(serviceType);
-            }
-            serviceSpecBuilder.endSpec();
-
-            if (headlessServices || hasPorts) {
-                builder = builder.addToServiceItems(serviceBuilder.build());
-            }
-        }
+        addServices(builder, labelMap);
 
         Template template = getTemplate();
         String iconUrl = getIconUrl();
@@ -985,6 +978,121 @@ public class JsonMojo extends AbstractFabric8Mojo {
         } catch (Exception e) {
             throw new IllegalArgumentException("Failed to generate Kubernetes JSON.", e);
         }
+    }
+
+    private void addServices(KubernetesListBuilder builder, Map<String, String> labelMap) throws MojoExecutionException {
+        MavenProject project = getProject();
+        Properties properties = getProjectAndFabric8Properties(project);
+
+        Set<String> serviceNames = new HashSet<>(Arrays.asList(""));
+        for (Map.Entry<Object, Object> entry : properties.entrySet()) {
+            Object key = entry.getKey();
+            if (key instanceof String) {
+                String s = (String) key;
+                Matcher m = SERVICE_PATTERN.matcher(s);
+                if (m.matches()) {
+                    String name = m.group(NAME);
+                    serviceNames.add(name);
+                }
+            }
+        }
+
+        for (String serviceName : serviceNames) {
+            Map<String, String> serviceAnnotations = getServiceAnnotations();
+            serviceAnnotations.putAll(getMetricsAnnotations(serviceName));
+
+            Map<String, String> selector = new HashMap<>(labelMap);
+            if (removeVersionLabelFromServiceSelector) {
+                if (selector.remove("version") != null) {
+                    getLog().info("Removed 'version' label from service selector for service `" + serviceName + "`");
+                }
+            }
+
+            String tempServiceName = serviceName;
+            if (Strings.isNullOrBlank(tempServiceName)) {
+                tempServiceName = this.serviceName;
+            }
+
+            ServiceBuilder serviceBuilder = new ServiceBuilder()
+                .withNewMetadata()
+                .withName(tempServiceName)
+                .withLabels(labelMap)
+                .withAnnotations(serviceAnnotations)
+                .endMetadata();
+
+            ServiceFluent.SpecNested<ServiceBuilder> serviceSpecBuilder = serviceBuilder.withNewSpec().withSelector(selector);
+
+            List<ServicePort> servicePorts = getServicePorts(serviceName);
+            getLog().info("Generated ports: " + servicePorts);
+            boolean hasPorts = servicePorts != null && !servicePorts.isEmpty();
+            if (hasPorts) {
+                serviceSpecBuilder.withPorts(servicePorts);
+            }
+
+            String headlessPrefix = buildServicePrefix(serviceName, "fabric8.service", "headless");
+            Boolean tempHeadlessService = Boolean.valueOf(properties.getProperty(headlessPrefix));
+            if (tempHeadlessService) {
+                serviceSpecBuilder.withClusterIP("None");
+
+                // If this is a headless service with no ports then see if metrics is enabled & add that as a port - hacky!
+                if (!hasPorts && Boolean.parseBoolean(serviceAnnotations.get(metricsScrapeAnnotation))) {
+                    try {
+                        String port = serviceAnnotations.get(metricsPortAnnotation);
+                        Integer metricsPort = Integer.parseInt(port);
+                        if (metricsPort != null) {
+                            ServicePort servicePort = new ServicePort();
+                            servicePort.setPort(metricsPort);
+                            servicePort.setTargetPort(new IntOrString(metricsPort));
+                            serviceSpecBuilder.withPorts(Arrays.asList(servicePort));
+                        }
+                    } catch (NumberFormatException e) {
+                        // Ignore this.
+                    }
+                }
+            }
+
+            if (Strings.isNotBlank(serviceType)) {
+                serviceSpecBuilder.withType(serviceType);
+            }
+            serviceSpecBuilder.endSpec();
+
+            if (tempHeadlessService || hasPorts) {
+                builder = builder.addToServiceItems(serviceBuilder.build());
+            }
+        }
+    }
+
+    private Map<? extends String, ? extends String> getMetricsAnnotations(String serviceName) {
+        Map<String, String> metricsAnnotations = new HashMap<>();
+
+        boolean tempMetricsScrape;
+        Integer tempMetricsPort = null;
+        String tempMetricsScheme;
+
+        if (Strings.isNotBlank(serviceName)) {
+            Properties properties = getProjectAndFabric8Properties(getProject());
+            tempMetricsScrape = Boolean.parseBoolean(properties.getProperty(buildServicePrefix(serviceName, "fabric8.service", "metrics.scrape")));
+            tempMetricsScheme = properties.getProperty(buildServicePrefix(serviceName, "fabric8.service", "metrics.scheme"));
+            String port = properties.getProperty(buildServicePrefix(serviceName, "fabric8.service", "metrics.port"));
+            if (port != null) {
+                tempMetricsPort = Integer.parseInt(port);
+            }
+        } else {
+            tempMetricsScrape = metricsScrape;
+            tempMetricsScheme = metricsScheme;
+            tempMetricsPort = metricsPort;
+        }
+
+        if (tempMetricsScrape) {
+            metricsAnnotations.put(metricsScrapeAnnotation, Boolean.toString(tempMetricsScrape));
+            if (tempMetricsPort != null) {
+                metricsAnnotations.put(metricsPortAnnotation, tempMetricsPort.toString());
+            }
+            if (tempMetricsScheme != null) {
+                metricsAnnotations.put(metricsSchemeAnnotation, tempMetricsScheme);
+            }
+        }
+        return metricsAnnotations;
     }
 
     protected void addPersistentVolumeClaims(KubernetesListBuilder builder, List<Volume> volumes) {
@@ -1210,10 +1318,10 @@ public class JsonMojo extends AbstractFabric8Mojo {
         }
 
         if (Strings.isNullOrBlank(answer)) {
-            // maybe its a common icon
-            String commonRef = asCommonIconRef(iconRef);
-            if (commonRef != null) {
-                answer = URLUtils.pathJoin("https://cdn.rawgit.com/fabric8io/fabric8", iconBranch, "/fabric8-maven-plugin/src/main/resources/", commonRef);
+            // maybe its a common icon that is embedded in fabric8-console
+            String embeddedIcon = embeddedIconsInConsole(iconRef, "img/icons/");
+            if (embeddedIcon != null) {
+                return embeddedIcon;
             }
         }
 
@@ -1235,10 +1343,6 @@ public class JsonMojo extends AbstractFabric8Mojo {
         byte[] encoded = Base64Encoder.encode(bytes);
 
         int base64SizeK = Math.round(encoded.length / 1024);
-
-        getLog().info("found icon file: " + iconFile +
-                " which is " + sizeK + "K" +
-                " base64 encoded " + base64SizeK + "K");
 
         if (base64SizeK < maximumDataUrlSizeK) {
             String mimeType = guessMediaType(iconFile);
@@ -1274,15 +1378,13 @@ public class JsonMojo extends AbstractFabric8Mojo {
                         getLog().warn("No iconUrlPrefix defined or could be found via SCM in the pom.xml so cannot add an icon URL!");
                     } else {
                         String answer = URLUtils.pathJoin(urlPrefix, iconBranch, relativePath);
-                        getLog().info("icon url is: " + answer);
                         return answer;
                     }
                 }
             } else {
-                String commonRef = asCommonIconRef(iconRef);
-                if (commonRef != null) {
-                    String answer = URLUtils.pathJoin("https://cdn.rawgit.com/fabric8io/fabric8", iconBranch, "/fabric8-maven-plugin/src/main/resources/", commonRef);
-                    return answer;
+                String embeddedIcon = embeddedIconsInConsole(iconRef, "img/icons/");
+                if (embeddedIcon != null) {
+                    return embeddedIcon;
                 } else {
                     getLog().warn("Cannot find url for icon to use " + iconUrl);
                 }
@@ -1291,7 +1393,14 @@ public class JsonMojo extends AbstractFabric8Mojo {
         return null;
     }
 
-    protected String asCommonIconRef(String iconRef) {
+    /**
+     * To use embedded icons provided by the fabric8-console
+     *
+     * @param iconRef  name of icon file
+     * @param prefix   prefix location for the icons in the fabric8-console
+     * @return the embedded icon ref, or <tt>null</tt> if no embedded icon found to be used
+     */
+    protected String embeddedIconsInConsole(String iconRef, String prefix) {
         if (iconRef == null) {
             return null;
         }
@@ -1301,27 +1410,83 @@ public class JsonMojo extends AbstractFabric8Mojo {
         }
 
         if (iconRef.contains("activemq")) {
-            return "icons/activemq.svg";
+            return prefix + "activemq.svg";
+        } else if (iconRef.contains("apiman")) {
+            return prefix + "apiman.png";
+        } else if (iconRef.contains("api-registry")) {
+            return prefix + "api-registry.svg";
+        } else if (iconRef.contains("brackets")) {
+            return prefix + "brackets.svg";
         } else if (iconRef.contains("camel")) {
-            return "icons/camel.svg";
+            return prefix + "camel.svg";
+        } else if (iconRef.contains("chaos-monkey")) {
+            return prefix + "chaos-monkey.png";
+        } else if (iconRef.contains("docker-registry")) {
+            return prefix + "docker-registry.png";
+        } else if (iconRef.contains("elasticsearch")) {
+            return prefix + "elasticsearch.png";
+        } else if (iconRef.contains("fluentd")) {
+            return prefix + "fluentd.png";
+        } else if (iconRef.contains("gerrit")) {
+            return prefix + "gerrit.png";
+        } else if (iconRef.contains("gitlab")) {
+            return prefix + "gitlab.svg";
+        } else if (iconRef.contains("gogs")) {
+            return prefix + "gogs.png";
+        } else if (iconRef.contains("grafana")) {
+            return prefix + "grafana.png";
+        } else if (iconRef.contains("hubot-irc")) {
+            return prefix + "hubot-irc.png";
+        } else if (iconRef.contains("hubot-letschat")) {
+            return prefix + "hubot-letschat.png";
+        } else if (iconRef.contains("hubot-notifier")) {
+            return prefix + "hubot-notifier.png";
+        } else if (iconRef.contains("hubot-slack")) {
+            return prefix + "hubot-slack.png";
+        } else if (iconRef.contains("image-linker")) {
+            return prefix + "image-linker.svg";
+        } else if (iconRef.contains("javascript")) {
+            return prefix + "javascript.png";
         } else if (iconRef.contains("java")) {
-            return "icons/java.svg";
+            return prefix + "java.svg";
+        } else if (iconRef.contains("jenkins")) {
+            return prefix + "jenkins.svg";
         } else if (iconRef.contains("jetty")) {
-            return "icons/jetty.svg";
+            return prefix + "jetty.svg";
         } else if (iconRef.contains("karaf")) {
-            return "icons/karaf.svg";
+            return prefix + "karaf.svg";
+        } else if (iconRef.contains("keycloak")) {
+            return prefix + "keycloak.svg";
+        } else if (iconRef.contains("kibana")) {
+            return prefix + "kibana.svg";
+        } else if (iconRef.contains("kiwiirc")) {
+            return prefix + "kiwiirc.png";
+        } else if (iconRef.contains("letschat")) {
+            return prefix + "letschat.png";
         } else if (iconRef.contains("mule")) {
-            return "icons/mule.svg";
+            return prefix + "mule.svg";
+        } else if (iconRef.contains("nexus")) {
+            return prefix + "nexus.png";
+        } else if (iconRef.contains("node")) {
+            return prefix + "node.svg";
+        } else if (iconRef.contains("orion")) {
+            return prefix + "orion.png";
+        } else if (iconRef.contains("prometheus")) {
+            return prefix + "prometheus.png";
+        } else if (iconRef.contains("django") || iconRef.contains("python")) {
+            return prefix + "python.png";
         } else if (iconRef.contains("spring-boot")) {
-            return "icons/spring-boot.svg";
+            return prefix + "spring-boot.svg";
+        } else if (iconRef.contains("taiga")) {
+            return prefix + "taiga.png";
         } else if (iconRef.contains("tomcat")) {
-            return "icons/tomcat.svg";
+            return prefix + "tomcat.svg";
         } else if (iconRef.contains("tomee")) {
-            return "icons/tomee.svg";
-        } else if (iconRef.contains("weld")) {
-            return "icons/weld.svg";
+            return prefix + "tomee.svg";
         } else if (iconRef.contains("wildfly")) {
-            return "icons/wildfly.svg";
+            return prefix + "wildfly.svg";
+        } else if (iconRef.contains("weld")) {
+            return prefix + "weld.svg";
         }
 
         return null;
@@ -1465,6 +1630,14 @@ public class JsonMojo extends AbstractFabric8Mojo {
         this.projectName = projectName;
     }
 
+    public String getCombineProjectName() {
+        return combineProjectName;
+    }
+
+    public void setCombineProjectName(String combineProjectName) {
+        this.combineProjectName = combineProjectName;
+    }
+
     public String getGroupName() {
         return groupName;
     }
@@ -1543,72 +1716,118 @@ public class JsonMojo extends AbstractFabric8Mojo {
         return answer;
     }
 
-    public List<ServicePort> getServicePorts() throws MojoExecutionException {
-        if (servicePorts == null) {
-            servicePorts = new ArrayList<>();
+    private String buildServicePrefix(String name, String prefix, String suffix) {
+        String servicePrefix = prefix;
+        if (Strings.isNotBlank(name)) {
+            servicePrefix += "." + name;
         }
-        if (servicePorts.isEmpty()) {
-            Properties properties1 = getProjectAndFabric8Properties(getProject());
-            Map<String, String> servicePortProperties = findPropertiesWithPrefix(properties1, FABRIC8_PORT_SERVICE_PREFIX);
-            Map<String, String> serviceContainerPortProperties = findPropertiesWithPrefix(properties1, FABRIC8_CONTAINER_PORT_SERVICE_PREFIX);
-            Map<String, String> serviceProtocolProperties = findPropertiesWithPrefix(properties1, FABRIC8_PROTOCOL_SERVICE_PREFIX);
+        return servicePrefix + "." + suffix;
+    }
 
-            for (Map.Entry<String, String> entry : servicePortProperties.entrySet()) {
-                String name = entry.getKey();
-                String servicePortText = entry.getValue();
-                Integer servicePortNumber = parsePort(servicePortText, FABRIC8_PORT_SERVICE_PREFIX + name);
-                if (servicePortNumber != null) {
-                    String containerPort = serviceContainerPortProperties.get(name);
-                    if (Strings.isNullOrBlank(containerPort)) {
-                        getLog().warn("Missing container port for service - need to specify " + FABRIC8_CONTAINER_PORT_SERVICE_PREFIX + name + " property");
-                    } else {
-                        ServicePort servicePort = new ServicePort();
-                        servicePort.setName(name);
-                        servicePort.setPort(servicePortNumber);
+    private List<ServicePort> getServicePorts(String serviceName) throws MojoExecutionException {
+        String servicePortPrefix = buildServicePrefix(serviceName, "fabric8.service", "port");
+        String serviceContainerPortPrefix = buildServicePrefix(serviceName, "fabric8.service", "containerPort");
+        String serviceNodePortPrefix = buildServicePrefix(serviceName, "fabric8.service", "nodePort");
+        String serviceProtocolPrefix = buildServicePrefix(serviceName, "fabric8.service", "protocol");
 
-                        IntOrString containerPortSpec = new IntOrString();
-                        Integer containerPortNumber = parsePort(containerPort, FABRIC8_CONTAINER_PORT_SERVICE_PREFIX + name);
-                        if (containerPortNumber != null) {
-                            containerPortSpec.setIntVal(containerPortNumber);
-                        } else {
-                            containerPortSpec.setStrVal(containerPort);
-                        }
-                        servicePort.setTargetPort(containerPortSpec);
+        Properties properties1 = getProjectAndFabric8Properties(getProject());
 
-                        String portProtocol = serviceProtocolProperties.get(name);
-                        if (portProtocol != null) {
-                            servicePort.setProtocol(portProtocol);
-                        }
+        List<ServicePort> servicePorts = new ArrayList<>();
+        Map<String, String> servicePortProperties = findPropertiesWithPrefix(properties1, servicePortPrefix + ".");
+        Map<String, String> serviceContainerPortProperties = findPropertiesWithPrefix(properties1, serviceContainerPortPrefix + ".");
+        Map<String, String> serviceNodePortProperties = findPropertiesWithPrefix(properties1, serviceNodePortPrefix + ".");
+        Map<String, String> serviceProtocolProperties = findPropertiesWithPrefix(properties1, serviceProtocolPrefix + ".");
 
-                        servicePorts.add(servicePort);
-                    }
-                }
-            }
-
-            if (serviceContainerPort != null && servicePort != null) {
-
-                if (servicePorts.size() > 0) {
-                    throw new MojoExecutionException("Multi-port services must use the " + FABRIC8_PORT_SERVICE_PREFIX + "<name> format");
-                }
-
-                ServicePort actualServicePort = new ServicePort();
-                Integer containerPortNumber = parsePort(serviceContainerPort, FABRIC8_CONTAINER_PORT_SERVICE);
-                IntOrString containerPort = new IntOrString();
-                if (containerPortNumber != null) {
-                    containerPort.setIntVal(containerPortNumber);
+        for (Map.Entry<String, String> entry : servicePortProperties.entrySet()) {
+            String name = entry.getKey();
+            String servicePortText = entry.getValue();
+            Integer servicePortNumber = parsePort(servicePortText, servicePortPrefix + name);
+            if (servicePortNumber != null) {
+                String containerPort = serviceContainerPortProperties.get(name);
+                if (Strings.isNullOrBlank(containerPort)) {
+                    getLog().warn("Missing container port for service - need to specify " + serviceContainerPortPrefix + name + " property");
                 } else {
-                    containerPort.setStrVal(serviceContainerPort);
-                }
-                actualServicePort.setTargetPort(containerPort);
-                actualServicePort.setPort(servicePort);
-                if (serviceProtocol != null) {
-                    actualServicePort.setProtocol(serviceProtocol);
-                    servicePorts.add(actualServicePort);
+                    ServicePort servicePort = new ServicePort();
+                    servicePort.setName(name);
+                    servicePort.setPort(servicePortNumber);
+
+                    IntOrString containerPortSpec = getPortSpec(containerPort, serviceContainerPortPrefix, name);
+                    servicePort.setTargetPort(containerPortSpec);
+
+                    String nodePort = serviceNodePortProperties.get(name);
+                    if (nodePort != null) {
+                        IntOrString nodePortSpec = getPortSpec(nodePort, serviceNodePortPrefix, name);
+                        Integer nodePortInt = nodePortSpec.getIntVal();
+                        if (nodePortInt != null) {
+                            servicePort.setNodePort(nodePortInt);
+                        }
+                    }
+
+                    String portProtocol = serviceProtocolProperties.get(name);
+                    if (portProtocol != null) {
+                        servicePort.setProtocol(portProtocol);
+                    }
+
+                    servicePorts.add(servicePort);
                 }
             }
-
         }
+
+        Integer tempPort;
+        String tempContainerPort;
+        Integer tempNodePort;
+        String tempServiceProtocol;
+
+        if (Strings.isNotBlank(serviceName)) {
+            tempPort = parsePort(properties1.getProperty(servicePortPrefix), servicePortPrefix);
+            tempContainerPort = properties1.getProperty(serviceContainerPortPrefix);
+            tempNodePort = parsePort(properties1.getProperty(serviceNodePortPrefix), serviceNodePortPrefix);
+            tempServiceProtocol = properties1.getProperty(serviceProtocolPrefix, "TCP");
+        } else {
+            tempPort = servicePort;
+            tempContainerPort = serviceContainerPort;
+            tempNodePort = serviceNodePort;
+            tempServiceProtocol = serviceProtocol;
+        }
+
+        if (tempContainerPort != null || tempPort != null) {
+
+            if (servicePorts.size() > 0) {
+                throw new MojoExecutionException("Multi-port services must use the " + servicePortPrefix + "<name> format");
+            }
+
+            ServicePort actualServicePort = new ServicePort();
+
+            IntOrString containerPort = getPortSpec(tempContainerPort, serviceContainerPortPrefix, null);
+
+            actualServicePort.setTargetPort(containerPort);
+            actualServicePort.setPort(tempPort);
+            if (tempNodePort != null) {
+                actualServicePort.setNodePort(tempNodePort);
+            }
+            if (tempServiceProtocol != null) {
+                actualServicePort.setProtocol(tempServiceProtocol);
+                servicePorts.add(actualServicePort);
+            }
+        }
+
         return servicePorts;
+    }
+
+    private IntOrString getPortSpec(String portText, String portServicePrefix, String name) {
+        IntOrString portSpec = new IntOrString();
+        String portServiceName = portServicePrefix;
+        if (name != null) {
+            portServiceName = portServicePrefix + name;
+        }
+        Integer portNumber = parsePort(portText, portServiceName);
+        if (portNumber != null) {
+            portSpec.setIntVal(portNumber);
+        } else {
+            portSpec.setStrVal(portText);
+        }
+
+        return portSpec;
     }
 
     protected static EnvVar getOrCreateEnv(Map<String, EnvVar> envMap, String name) {
@@ -1671,9 +1890,7 @@ public class JsonMojo extends AbstractFabric8Mojo {
     }
 
     public Map<String, String> getServiceAnnotations() throws MojoExecutionException {
-    	if (serviceAnnotations == null) {
-            serviceAnnotations = loadAnnotations(serviceAnnotationsFile, "fabric8.annotations.service.", "Service");
-        }
+        Map<String, String> serviceAnnotations = loadAnnotations(serviceAnnotationsFile, "fabric8.annotations.service.", "Service");
         return serviceAnnotations;
     }
 

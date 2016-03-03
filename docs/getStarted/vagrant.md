@@ -29,13 +29,13 @@ Depending on your host operating system you need to install an
 additional vagrant plugin:
 
 * `vagrant plugin install landrush` for Linux and OS X
-* `vagrant plugin install vagrant-hostmanager-fabric8` for Windows
+* `vagrant plugin install vagrant-hostmanager` for Windows
 
 The next steps are needed for proper routing from the host to
 OpenShift services which are exposed via routes:
 
-* **Linux**: Setup up once a `dnsmasq` DNS proxy locally. The detailed
-  procedure depend on the Linux distribution used.  Here is the
+* **Linux**: Setup a `dnsmasq` DNS proxy locally. The detailed
+  procedure depends on the Linux distribution used.  Here is the
   example for Ubuntu:
 
         sudo apt-get install -y resolvconf dnsmasq
@@ -56,7 +56,7 @@ OpenShift services which are exposed via routes:
 
 * **OS X**: Nothing has to be done. OS X will automatically resolve
   all routes to `*.vagrant.f8` to your Vagrant VM. This is done via OS
-  X's resolver feature (see `man 5 resolver` for details). 
+  X's resolver feature (see `man 5 resolver` for details).
 
 Now startup the Vagrant VM.
 
@@ -64,20 +64,20 @@ Now startup the Vagrant VM.
 vagrant up
 ```
 
-Note the vagrant image is by default configured with 2 cpu cores and
+Note the vagrant image is by default configured with 2 CPU cores and
 4 gigs of memory. It is recommended to not exceed about half of your
 machine’s resources. In case you have plenty of resources on your
-machine you can increase the settings, by editing the
+machine you can increase the settings by editing the
 `Vagrantfile`. The settings are defined in the bottom of the file:
 
 ```ruby
 v.cpus = 2
 ```
 
-To update the RAM you can use an envirnment variable. For example to run the `cd-pipeline` application we recommend about 8Gb of RAM:
+To update the RAM you can use an environment variable. For example to run the `cd-pipeline` application we recommend about 8Gb of RAM:
 
 ```
-export FABRIC8_VM_MEMORY=8000
+export FABRIC8_VM_MEMORY=8192
 ```
 
 Then follow the on screen instructions.
@@ -111,26 +111,26 @@ This will list all of the installed [OpenShift Templates](http://docs.openshift.
 on your installation.
 
 * To Run any of the installed templates just click the `Run` button
-  (the green play button). 
+  (the green play button).
 * To install any new
   [OpenShift Templates](http://docs.openshift.org/latest/dev_guide/templates.html)
   or other Kubernetes resources just drag and drop the JSON file onto
-  the `Apps` tab! 
+  the `Apps` tab!
 * You can download the
-  [fabric8 templates 2.2.68 distribution](http://repo1.maven.org/maven2/io/fabric8/devops/distro/distro/2.2.68/distro-2.2.68-templates.zip)
+  [fabric8 templates 2.2.96 distribution](http://repo1.maven.org/maven2/io/fabric8/devops/distro/distro/2.2.96/distro-2.2.96-templates.zip)
   unzip and drag the JSON files you want to install onto the
   [fabric8 console](http://fabric8.io/guide/console.html) and they
   should appear on the `Run...` page
 * You can install or upgrade application using the [helm command line tool](http://fabric8.io/guide/helm.html)     
 * You can also install other OpenShift Templates or Kubernetes
-  resources via the **oc** command line tool: 
+  resources via the **oc** command line tool:
 
     oc create -f jsonOr YamlFileOrUrl
 
 ### Setting up your local machine
 
 In order to communicate with the Vagrant VM from you localhost it is
-recommended to install the OpenShift client 
+recommended to install the OpenShift client
 tools. This is explained in an extra [document](local.html).
 
 This is also useful using the
@@ -300,7 +300,7 @@ For further information see:
 and
 [ioquatix/rubydns#55](https://github.com/ioquatix/rubydns/issues/55).
 
-#### Can not find / ping "vagrat.f8" from OS X
+#### Can not find / ping "vagrant.f8" from OS X
 
 In some rare case the DNS cache can get stale when you are updating
 your Vagrant or when doing restarts of the VM on OS X. In that case OS
@@ -310,3 +310,20 @@ case, flushing the DNS cache helps:
         sudo dscacheutil -flushcache
         sudo killall -HUP mDNSResponder
 
+
+#### Updating: tear down fabric8 and re-install after a new fabric8 release
+
+If you want to avoid performing a `vagrant destroy && vagrant up` when a new release is available you should be able to follow these commands from within the fabric8-installer dir..
+
+        git pull
+        cd vagrant/openshift
+        vagrant provision
+        vagrant ssh
+        sudo su
+        oc login --username=admin --password=any
+        oc delete all -l provider=fabric8
+        oc delete templates --all
+        gofabric8 deploy -y
+        gofabric8 secrets -y
+
+__NOTE__ after a `vagrant reload` you may run into the DNS cache [issue above](#can-not-find--ping-vagratf8-from-os-x)

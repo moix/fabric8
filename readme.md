@@ -1,6 +1,7 @@
 fabric8
 =======
 
+[![Maven Central](https://maven-badges.herokuapp.com/maven-central/io.fabric8/fabric8-project/badge.svg?style=flat-square)](https://maven-badges.herokuapp.com/maven-central/io.fabric8/docker-maven-plugin/)
 ![Apache 2](http://img.shields.io/badge/license-Apache%202-red.svg)
 
 <p align="center">
@@ -19,6 +20,7 @@ fabric8
 ### Documentation
 
 * [Overview](http://fabric8.io/guide/overview.html)
+* [Blog](http://blog.fabric8.io/)
 * [Differences in 2.x from 1.x](http://fabric8.io/guide/v2-changes.html)
 
 ### Demos
@@ -31,6 +33,12 @@ fabric8
 
 * [Getting Started guides](http://fabric8.io/guide/getStarted.html)
 
+### Source code
+
+Fabric8 is made up of a number of different git repositories including this one.
+
+Please see the [docs/projects.md](docs/projects.md) file for a full list of all the github repositories.
+
 ### Building the code
 
 Please see the [building.md](building.md) file.
@@ -38,6 +46,8 @@ Please see the [building.md](building.md) file.
 ### Contributing to the project
 
 We love [contributions](Contributing.md) and you are very welcome to help.
+
+Check out the [Community](http://fabric8.io/community/index.html)
 
 ### License
 

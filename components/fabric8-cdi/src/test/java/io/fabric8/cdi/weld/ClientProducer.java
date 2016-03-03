@@ -1,19 +1,18 @@
-/*
- * Copyright 2005-2014 Red Hat, Inc.
+/**
+ *  Copyright 2005-2015 Red Hat, Inc.
  *
- * Red Hat licenses this file to you under the Apache License, version
- * 2.0 (the "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ *  Red Hat licenses this file to you under the Apache License, version
+ *  2.0 (the "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
- * implied.  See the License for the specific language governing
- * permissions and limitations under the License.
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+ *  implied.  See the License for the specific language governing
+ *  permissions and limitations under the License.
  */
-
 package io.fabric8.cdi.weld;
 
 import io.fabric8.kubernetes.api.model.Endpoints;
@@ -145,7 +144,7 @@ public class ClientProducer {
                         .withPort(8080)
                     .endPort()
                     .addNewAddresse()
-                        .withIp("172.30.17.2")
+                        .withIp("10.0.0.1")
                     .endAddresse()
                 .endSubset()
                 .addNewSubset()
@@ -154,7 +153,48 @@ public class ClientProducer {
                         .withPort(8080)
                     .endPort()
                 .addNewAddresse()
-                    .withIp("172.30.17.3")
+                    .withIp("10.0.0.2")
+                .endAddresse()
+                .endSubset()
+                .build();
+
+        Endpoints service2EndpointsA = new EndpointsBuilder()
+                .withNewMetadata()
+                .withName("service2")
+                .withNamespace("default")
+                .endMetadata()
+                .addNewSubset()
+                .addNewPort()
+                .withName("port")
+                .withPort(8080)
+                .endPort()
+                .addNewAddresse()
+                .withIp("10.0.0.1")
+                .endAddresse()
+                .endSubset()
+                .addNewSubset()
+                .addNewPort()
+                .withName("port")
+                .withPort(8080)
+                .endPort()
+                .addNewAddresse()
+                .withIp("10.0.0.2")
+                .endAddresse()
+                .endSubset()
+                .build();
+
+        Endpoints service2EndpointsB = new EndpointsBuilder()
+                .withNewMetadata()
+                .withName("service2")
+                .withNamespace("default")
+                .endMetadata()
+                .addNewSubset()
+                .addNewPort()
+                .withName("port")
+                .withPort(8080)
+                .endPort()
+                .addNewAddresse()
+                .withIp("10.0.0.1")
                 .endAddresse()
                 .endSubset()
                 .build();
@@ -179,7 +219,18 @@ public class ClientProducer {
                 service1Endpoints
         ).anyTimes();
 
-        mock.endpoints().inNamespace("default").list().andReturn(new EndpointsListBuilder().addToItems(multiPortEndpoint, service1Endpoints).build()).anyTimes();
+        mock.endpoints().inNamespace("default").withName("service2").get().andReturn(
+                service2EndpointsA
+        ).once();
+
+        mock.endpoints().inNamespace("default").withName("service2").get().andReturn(
+                service2EndpointsB
+        ).anyTimes();
+
+        mock.endpoints().inNamespace("default").withName("multiport").get().andReturn(
+                multiPortEndpoint
+        ).anyTimes();
+
         mock.adapt(OpenShiftClient.class).andReturn(getOpenShiftClient()).anyTimes();
 
         mock.getNamespace().andAnswer(new IAnswer<String>() {

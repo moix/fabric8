@@ -21,7 +21,7 @@ In this guide we will start with one of the simplest which is the `java-simple-f
 To get started you can checkout the quickstart source code using the following git command:
 
     git clone https://github.com/fabric8io/ipaas-quickstarts.git
-    cd ipaas-quickstart
+    cd ipaas-quickstarts
 
 And then change directory to 
 
@@ -45,12 +45,13 @@ In this guide we assume you have setup the `DOCKER_HOST` environment, such as:
 
 .. and using the OpenShift Client we can login to OpenShift with
 
-    oc login      // (use admin/admin if using the default credentials)
+    # Use admin/admin if using the default credentials
+    oc login      
     
 
 #### Build the application and run locally
 
-Almost every quickstarts can run locally, which allows you as a developer to quickly try it. First we need to build the project with Maven
+Almost every quickstart can run locally, which allows you as a developer to quickly try it. First we need to build the project with Maven
 
     mvn clean install
     
@@ -71,7 +72,7 @@ You can use `ctrl + c` to stop the application.
 
 As this quickstart is a _fat jar_ type of application you can also run it using `java -jar` as shown:
 
-    java -jar target/quickstart-java-simple-fatjar-2.2.68.jar
+    java -jar target/quickstart-java-simple-fatjar-2.2.96.jar
     
 Now lets try to build and deploy this application to docker and kubernetes.
 
@@ -219,4 +220,3 @@ Another easy way would be to use the fabric8 web console to delete the quickstat
 #### Closing remarks
 
 Yay you made through this first walk through of the most simple quickstart we have. For the next walk lets up the game a bit and use Camel and Kubernetes services.
-

@@ -15,6 +15,8 @@
  */
 package io.fabric8.maven;
 
+import com.jcraft.jsch.*;
+import com.jcraft.jsch.agentproxy.*;
 import io.fabric8.kubernetes.api.KubernetesHelper;
 import io.fabric8.maven.helm.Chart;
 import io.fabric8.utils.Files;
@@ -30,6 +32,12 @@ import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.MavenProjectHelper;
 import org.eclipse.jgit.api.CloneCommand;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.TransportConfigCallback;
+import org.eclipse.jgit.transport.JschConfigSessionFactory;
+import org.eclipse.jgit.transport.OpenSshConfig;
+import org.eclipse.jgit.transport.SshTransport;
+import org.eclipse.jgit.transport.Transport;
+import org.eclipse.jgit.util.FS;
 
 import java.io.File;
 import java.io.IOException;
@@ -68,12 +76,17 @@ public class HelmMojo extends AbstractFabric8Mojo {
     @Parameter(property = "fabric8.helm.cloneDir")
     private File helmCloneDir;
 
+    @Parameter(property = "fabric8.helm.privateKeyPath")
+    private String privateKeyPath;
+
+    @Parameter(property = "fabric8.helm.privateKeyPassphrase")
+    private String privateKeyPassphrase;
+
     /**
      * The kubernetes YAML file
      */
     @Parameter(property = PROPERTY_HELM_CHART_NAME, defaultValue = "${project.artifactId}")
     private String chartName;
-
 
     /**
      * The name of the git remote repo
@@ -199,14 +212,58 @@ public class HelmMojo extends AbstractFabric8Mojo {
         } else {
             CloneCommand command = Git.cloneRepository();
             command = command.setURI(gitUrl).setDirectory(outputFolder).setRemote(remoteRepoName);
+
+            setupCredentials(command);
+
             try {
                 Git git = command.call();
             } catch (Throwable e) {
-                throw new RuntimeException("Failed to clone chart repo " + gitUrl + " due: " + e.getMessage());
+                throw new RuntimeException("Failed to clone chart repo " + gitUrl + " due: ", e);
             }
         }
     }
 
+    private void setupCredentials(CloneCommand command) {
+        command.setTransportConfigCallback(new TransportConfigCallback() {
+            @Override
+            public void configure(Transport transport) {
+                SshTransport sshTransport = (SshTransport) transport;
+                sshTransport.setSshSessionFactory(new JschConfigSessionFactory() {
+                    @Override
+                    protected void configure(OpenSshConfig.Host host, Session session) { }
+
+                    @Override
+                    protected JSch createDefaultJSch(FS fs) throws JSchException {
+                        JSch jsch = super.createDefaultJSch(fs);
+
+                        // If private key path is set, use this
+                        if (!Strings.isNullOrBlank(privateKeyPath)) {
+                            getLog().debug("helm: Using SSH private key from " + privateKeyPath);
+                            jsch.removeAllIdentity();
+                            if (!Strings.isNullOrBlank(privateKeyPassphrase)) {
+                                jsch.addIdentity(privateKeyPath, privateKeyPassphrase);
+                            } else {
+                                jsch.addIdentity(privateKeyPath);
+                            }
+                        } else {
+                            try {
+                                // Try using an ssh-agent first
+                                ConnectorFactory cf = ConnectorFactory.getDefault();
+                                Connector con = cf.createConnector();
+                                IdentityRepository irepo = new RemoteIdentityRepository(con);
+                                jsch.setIdentityRepository(irepo);
+                                getLog().debug("helm: Using ssh-agent");
+                            } catch (AgentProxyException e) {
+                                // No special handling
+                                getLog().debug("helm: No ssh-agent available");
+                            }
+                        }
+                        return jsch;
+                    }
+                });
+            }
+        });
+    }
 
     public File getKubernetesYaml() {
         return kubernetesYaml;
